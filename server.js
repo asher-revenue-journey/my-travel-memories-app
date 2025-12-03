@@ -6,21 +6,28 @@ const cors = require('cors');
 const fs = require('fs');
 
 const app = express();
-const PORT = 3000;
+
+// Use Railway's port if available, otherwise 3000 locally
+const PORT = process.env.PORT || 3000;
+
+// Absolute paths (safer in cloud envs)
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const DB_PATH = path.join(__dirname, 'database.db');
+
+// Make sure uploads directory exists
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
-
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync('./uploads')) {
-  fs.mkdirSync('./uploads');
-}
+app.use(express.static(PUBLIC_DIR));
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Database setup
-const db = new sqlite3.Database('./database.db', (err) => {
+const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) {
     console.error('Error opening database:', err);
   } else {
@@ -40,10 +47,11 @@ const db = new sqlite3.Database('./database.db', (err) => {
 // Configure multer for image uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, 'uploads/');
+    cb(null, UPLOADS_DIR);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const uniqueSuffix =
+      Date.now() + '-' + Math.round(Math.random() * 1e9);
     cb(null, uniqueSuffix + path.extname(file.originalname));
   }
 });
@@ -53,7 +61,9 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const extname = allowedTypes.test(
+      path.extname(file.originalname).toLowerCase()
+    );
     const mimetype = allowedTypes.test(file.mimetype);
 
     if (mimetype && extname) {
@@ -68,13 +78,17 @@ const upload = multer({
 
 // Get all countries
 app.get('/api/countries', (req, res) => {
-  db.all('SELECT * FROM countries ORDER BY created_at DESC', [], (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+  db.all(
+    'SELECT * FROM countries ORDER BY created_at DESC',
+    [],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json({ countries: rows });
     }
-    res.json({ countries: rows });
-  });
+  );
 });
 
 // Add a new country
@@ -83,13 +97,15 @@ app.post('/api/countries', upload.single('image'), (req, res) => {
   const imagePath = req.file ? req.file.filename : null;
 
   if (!name || !imagePath) {
-    return res.status(400).json({ error: 'Country name and image are required' });
+    return res
+      .status(400)
+      .json({ error: 'Country name and image are required' });
   }
 
   db.run(
     'INSERT INTO countries (name, image_path) VALUES (?, ?)',
     [name, imagePath],
-    function(err) {
+    function (err) {
       if (err) {
         res.status(500).json({ error: err.message });
         return;
@@ -108,29 +124,37 @@ app.delete('/api/countries/:id', (req, res) => {
   const { id } = req.params;
 
   // First get the image path to delete the file
-  db.get('SELECT image_path FROM countries WHERE id = ?', [id], (err, row) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-
-    if (row && row.image_path) {
-      // Delete the image file
-      const filePath = path.join(__dirname, 'uploads', row.image_path);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-
-    // Delete from database
-    db.run('DELETE FROM countries WHERE id = ?', [id], function(err) {
+  db.get(
+    'SELECT image_path FROM countries WHERE id = ?',
+    [id],
+    (err, row) => {
       if (err) {
         res.status(500).json({ error: err.message });
         return;
       }
-      res.json({ message: 'Country deleted successfully' });
-    });
-  });
+
+      if (row && row.image_path) {
+        // Delete the image file
+        const filePath = path.join(UPLOADS_DIR, row.image_path);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+
+      // Delete from database
+      db.run(
+        'DELETE FROM countries WHERE id = ?',
+        [id],
+        function (err) {
+          if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+          }
+          res.json({ message: 'Country deleted successfully' });
+        }
+      );
+    }
+  );
 });
 
 // Update a country
@@ -141,19 +165,23 @@ app.put('/api/countries/:id', upload.single('image'), (req, res) => {
 
   if (newImagePath) {
     // If new image is uploaded, delete the old one
-    db.get('SELECT image_path FROM countries WHERE id = ?', [id], (err, row) => {
-      if (row && row.image_path) {
-        const filePath = path.join(__dirname, 'uploads', row.image_path);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+    db.get(
+      'SELECT image_path FROM countries WHERE id = ?',
+      [id],
+      (err, row) => {
+        if (row && row.image_path) {
+          const filePath = path.join(UPLOADS_DIR, row.image_path);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
         }
       }
-    });
+    );
 
     db.run(
       'UPDATE countries SET name = ?, image_path = ? WHERE id = ?',
       [name, newImagePath, id],
-      function(err) {
+      function (err) {
         if (err) {
           res.status(500).json({ error: err.message });
           return;
@@ -165,7 +193,7 @@ app.put('/api/countries/:id', upload.single('image'), (req, res) => {
     db.run(
       'UPDATE countries SET name = ? WHERE id = ?',
       [name, id],
-      function(err) {
+      function (err) {
         if (err) {
           res.status(500).json({ error: err.message });
           return;
@@ -177,5 +205,5 @@ app.put('/api/countries/:id', upload.single('image'), (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
